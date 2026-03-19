@@ -12,6 +12,9 @@
 #include "seal/util/uintcore.h"
 #include <stdexcept>
 
+#include "seal/util/ntt_butterfly_cuda.h"
+#include <type_traits>
+
 namespace seal
 {
     namespace util
@@ -34,6 +37,11 @@ namespace seal
             RootType mul_root_scalar(const RootType &r, const ScalarType &s) const;
 
             ValueType guard(const ValueType &a) const;
+
+            virtual uint64_t modulus() const
+            {
+                throw std::logic_error("modulus not supported");
+            };
         };
 
         /**
@@ -81,6 +89,16 @@ namespace seal
             DWTHandler(const Arithmetic<ValueType, RootType, ScalarType> &num_struct) : arithmetic_(num_struct)
             {}
 
+            void transform_to_rev(
+                ValueType *values, int log_n, const RootType *roots, const ScalarType *scalar = nullptr) const
+            {
+                if constexpr(std::is_same_v<ValueType, uint64_t>) {
+                    transform_to_rev_cuda(values, log_n, roots, arithmetic_.modulus()); // TODO: figure out what the correct modulus is
+                } else {
+                    transform_to_rev_old(values, log_n, roots, scalar); // Keeping the same call if it's not BFV
+                }
+            }
+
             /**
             Performs in place a fast multiplication with the DWT matrix.
             Accesses to powers of root is coalesced.
@@ -91,7 +109,7 @@ namespace seal
             @param[roots] powers of a root in bit-reversed order
             @param[scalar] an optional scalar that is multiplied to all output values
             */
-            void transform_to_rev(
+            void transform_to_rev_old(
                 ValueType *values, int log_n, const RootType *roots, const ScalarType *scalar = nullptr) const
             {
                 // constant transform size

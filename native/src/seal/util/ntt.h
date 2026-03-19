@@ -60,6 +60,11 @@ namespace seal
                 return SEAL_COND_SELECT(a >= two_times_modulus_, a - two_times_modulus_, a);
             }
 
+            inline uint64_t modulus() const
+            {
+                return this->modulus_.value();
+            }
+
         private:
             Modulus modulus_;
 

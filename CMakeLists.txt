@@ -772,3 +772,19 @@ configure_file(
     ${CMAKE_CURRENT_LIST_DIR}/dotnet/nuget/SEALNet.nuspec.in
     ${CMAKE_CURRENT_BINARY_DIR}/dotnet/nuget/SEALNet.nuspec
     @ONLY)
+
+
+enable_language(CUDA)
+
+find_package(CUDAToolkit REQUIRED)
+
+target_link_libraries(
+    seal
+    PUBLIC
+    CUDA::cudart
+)
+
+target_sources(seal
+    PRIVATE
+    native/src/seal/util/ntt_butterfly.cu
+)
