@@ -93,7 +93,7 @@ namespace seal
                 ValueType *values, int log_n, const RootType *roots, const ScalarType *scalar = nullptr) const
             {
                 if constexpr(std::is_same_v<ValueType, uint64_t>) {
-                    transform_to_rev_cuda(values, log_n, roots, arithmetic_.modulus()); // TODO: figure out what the correct modulus is
+                    transform_to_rev_cuda(values, log_n, roots, arithmetic_.modulus());
                 } else {
                     transform_to_rev_old(values, log_n, roots, scalar); // Keeping the same call if it's not BFV
                 }
@@ -135,6 +135,7 @@ namespace seal
                             r = *++roots;
                             x = values + offset;
                             y = x + gap;
+                                
                             for (std::size_t j = 0; j < gap; j++)
                             {
                                 u = arithmetic_.guard(*x);
@@ -152,6 +153,7 @@ namespace seal
                             r = *++roots;
                             x = values + offset;
                             y = x + gap;
+                            
                             for (std::size_t j = 0; j < gap; j += 4)
                             {
                                 u = arithmetic_.guard(*x);
@@ -179,7 +181,7 @@ namespace seal
                     }
                     gap >>= 1;
                 }
-
+                
                 if (scalar != nullptr)
                 {
                     RootType scaled_r;

@@ -14,44 +14,71 @@ __device__ __forceinline__ uint64_t sub_mod(uint64_t x, uint64_t y, uint64_t mod
     return x + (mod << 1) - y;
 }
 
-__device__ __forceinline__ uint64_t mul_mod(uint64_t x, Root64 y, uint64_t mod) {
-    uint64_t tmp = __umul64hi(x, y.quotient);
-    return x * y.operand - tmp * mod;
+__device__ __forceinline__ uint64_t mul_root(uint64_t x, Root64 y, uint64_t mod) {
+    uint64_t tmp1 = __umul64hi(x, y.quotient);
+    uint64_t tmp2 = y.operand * x - tmp1 * mod;
+    uint64_t mod_times_two = mod << 1;
+    return tmp2 >= mod_times_two ? tmp2 - mod_times_two : tmp2;
 }
 
-__device__ __forceinline__ uint64_t guard(uint64_t &x, uint64_t mod) {
-    uint64_t mod_x_2 = mod << 1;
-    return x >= mod_x_2 ? x - mod_x_2 : x;
+__device__ __forceinline__ uint64_t guard(uint64_t x, uint64_t mod) {
+    uint64_t mod_times_two = mod << 1;
+    return x >= mod_times_two ? x - mod_times_two : x;
 }
 
-__global__ void ntt_stage_kernel(
+__global__ void transform_to_rev_kernel_1(
     uint64_t* values, 
     int log_n, 
     const Root64* roots, 
     uint64_t modulus, 
-    int stage,
     int m,
     int gap) 
 {
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    int n = 1 << log_n;
-    int butterflies = n >> 1;
+    size_t n = 1ULL << log_n;
+    size_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+    
+    size_t total_threads = n >> 1;
+    if(tid >= total_threads) return;
 
-    if (tid >= butterflies) return;
+    // Map thread → (i, j)
+    size_t group = tid / gap;   // i
+    size_t j = tid % gap;
 
-    int group = tid / gap;
-    int j = tid % gap;
+    if(group >= m) return;
 
-    uint64_t x_idx = group * (gap << 1) + j;
-    uint64_t y_idx = x_idx + gap;
+    size_t offset = group * (gap << 1);
+
+    size_t idx_x = offset + j;
+    size_t idx_y = idx_x + gap;
 
     Root64 r = roots[group];
 
-    uint64_t u = values[x_idx];
-    uint64_t v = mul_mod(values[y_idx], r, modulus);
+    uint64_t u = guard(values[idx_x], modulus);
+    uint64_t v = mul_root(values[idx_y], r, modulus);
 
-    values[x_idx] = add_mod(u, v, modulus);
-    values[y_idx] = sub_mod(u, v, modulus);
+    values[idx_x] = add_mod(u, v, modulus);
+    values[idx_y] = sub_mod(u, v, modulus);
+}
+
+__global__ void transform_to_rev_kernel_2(
+    uint64_t* values,
+    const Root64* roots,
+    uint64_t modulus,
+    int m)
+{
+    size_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if(tid >= m) return;
+
+    int idx_x = 2 * tid;
+    int idx_y = idx_x + 1;
+
+    Root64 r = roots[tid];
+
+    uint64_t u = guard(values[idx_x], modulus);
+    uint64_t v = mul_root(values[idx_y], r, modulus);
+    
+    values[idx_x] = add_mod(u, v, modulus);
+    values[idx_y] = sub_mod(u, v, modulus);
 }
 
 void transform_to_rev_cuda(
@@ -61,27 +88,18 @@ void transform_to_rev_cuda(
     uint64_t modulus) 
 {
     size_t n = size_t(1) << log_n;
-    size_t butterflies = n >> 1;
-
+    
     // Device memory
     uint64_t* d_values;
     Root64* d_roots;
 
-    cudaMalloc(&d_values, n * sizeof(uint64_t));
-    cudaMemcpy(d_values, values, n * sizeof(uint64_t), cudaMemcpyHostToDevice);
-
-    // --- Precompute stage roots ---
     std::vector<Root64> stage_roots;
-
+    const seal::util::MultiplyUIntModOperand* root_ptr = roots;
     int gap = n >> 1;
     int m = 1;
 
-    const seal::util::MultiplyUIntModOperand* root_ptr = roots;
-
-    for (; m < (n >> 1); m <<= 1)
-    {
-        for (int i = 0; i < m; i++)
-        {
+    for(; m < (n >> 1); m <<= 1) {
+        for(int i = 0; i < m; i++) {
             root_ptr++;
 
             Root64 r;
@@ -93,28 +111,39 @@ void transform_to_rev_cuda(
         gap >>= 1;
     }
 
+    for(int i = 0; i < m; i++) {
+        root_ptr++;
+
+        Root64 r;
+        r.operand = root_ptr->operand;
+        r.quotient = root_ptr->quotient;
+
+        stage_roots.push_back(r);
+    }
+
+    cudaMalloc(&d_values, n * sizeof(uint64_t));
+    cudaMemcpy(d_values, values, n * sizeof(uint64_t), cudaMemcpyHostToDevice);
+    
     cudaMalloc(&d_roots, stage_roots.size() * sizeof(Root64));
     cudaMemcpy(d_roots, stage_roots.data(),
                stage_roots.size() * sizeof(Root64),
                cudaMemcpyHostToDevice);
 
     // --- Launch kernels ---
-    int threads = 256;
-    int blocks = (butterflies + threads - 1) / threads;
-
-    int stage = 0;
+    int total_threads = n >> 1;
+    int threads_per_block = 256;
+    int blocks = (total_threads + threads_per_block - 1) / threads_per_block;
+    
     gap = n >> 1;
     m = 1;
     int root_offset = 0;
 
-    for (; m < (n >> 1); m <<= 1, stage++)
-    {
-        ntt_stage_kernel<<<blocks, threads>>>(
+    for(; m < (n >> 1); m <<= 1) {
+        transform_to_rev_kernel_1<<<blocks, threads_per_block>>>(
             d_values,
             log_n,
             d_roots + root_offset,
             modulus,
-            stage,
             m,
             gap
         );
@@ -124,6 +153,14 @@ void transform_to_rev_cuda(
         root_offset += m;
         gap >>= 1;
     }
+    
+    transform_to_rev_kernel_2<<<blocks, threads_per_block>>>(
+        d_values,
+        d_roots + root_offset,
+        modulus,
+        m
+    );
+    cudaDeviceSynchronize();
 
     // Copy back
     cudaMemcpy(values, d_values, n * sizeof(uint64_t), cudaMemcpyDeviceToHost);
