@@ -210,6 +210,16 @@ namespace seal
                 }
             }
 
+            void transform_from_rev(
+                ValueType *values, int log_n, const RootType *roots, const ScalarType *scalar = nullptr) const
+            {
+                if constexpr(std::is_same_v<ValueType, uint64_t>) {
+                    transform_from_rev_cuda(values, log_n, roots, arithmetic_.modulus(), scalar);
+                } else {
+                    transform_from_rev_old(values, log_n, roots, scalar); // Keeping the same call if it's not BFV
+                }
+            }
+
             /**
             Performs in place a fast multiplication with the DWT matrix.
             Accesses to powers of root is coalesced.
@@ -219,7 +229,7 @@ namespace seal
             @param[roots] powers of a root in scrambled order
             @param[scalar] an optional scalar that is multiplied to all output values
             */
-            void transform_from_rev(
+            void transform_from_rev_old(
                 ValueType *values, int log_n, const RootType *roots, const ScalarType *scalar = nullptr) const
             {
                 // constant transform size
@@ -337,6 +347,7 @@ namespace seal
                     r = *++roots;
                     x = values;
                     y = x + gap;
+                    
                     if (gap < 4)
                     {
                         for (std::size_t j = 0; j < gap; j++)
@@ -373,6 +384,13 @@ namespace seal
                         }
                     }
                 }
+
+                std::cout << "CPU transform_from_rev" << std::endl;
+                for(size_t i = 0; i < n; i++) {
+                    std::cout << values[i] << ", ";
+                }
+                std::cout << std::endl << "scalar: " << (scalar != nullptr ? "ok" : "null");
+                std::cout << std::endl << std::endl;
             }
 
         private:
