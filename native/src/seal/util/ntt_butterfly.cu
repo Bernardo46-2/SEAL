@@ -21,12 +21,38 @@ __device__ __forceinline__ uint64_t mul_root(uint64_t x, Root64 y, uint64_t mod)
     return tmp2 >= mod_times_two ? tmp2 - mod_times_two : tmp2;
 }
 
-__device__ __forceinline__ Root64 mul_root_scalar(Root64 r, Root64 s, uint64_t mod) {
-    uint64_t tmp1 = __mul64hi(r.operand, s.quotient);
-    uint64_t tmp2 = s.operand * r.operand - tmp1 * mod;
-    uint64_t result = tmp2 >= mod ? tmp2 - mod : tmp2;
+__device__ uint64_t compute_quotient(uint64_t operand, uint64_t modulus)
+{
+    uint64_t hi = operand;
+    uint64_t lo = 0;
 
-    return (Root64) { .operand = result, .quotient = result / mod };
+    uint64_t quotient = 0;
+    uint64_t remainder = 0;
+
+    for (int i = 127; i >= 0; i--) {
+        remainder <<= 1;
+
+        if (i >= 64)
+            remainder |= (hi >> (i - 64)) & 1ULL;
+        else
+            remainder |= (lo >> i) & 1ULL;
+
+        if (remainder >= modulus) {
+            remainder -= modulus;
+            if (i < 64)
+                quotient |= (1ULL << i);
+        }
+    }
+
+    return quotient;
+}
+
+__device__ __forceinline__ Root64 mul_root_scalar(Root64 r, Root64 s, uint64_t mod) {
+    uint64_t tmp1 = __umul64hi(r.operand, s.quotient);
+    uint64_t tmp2 = s.operand * r.operand - tmp1 * mod;
+    uint64_t operand = tmp2 >= mod ? tmp2 - mod : tmp2;
+
+    return (Root64) { .operand = operand, .quotient = compute_quotient(operand, mod) };
 }
 
 __device__ __forceinline__ uint64_t guard(uint64_t x, uint64_t mod) {
@@ -245,7 +271,7 @@ __global__ void transform_from_rev_kernel_2_with_scalar(
 
     Root64 r = roots[0];
     Root64 scaled_r = mul_root_scalar(r, scalar, modulus);
-
+    
     int idx_x = tid;
     int idx_y = tid + gap;
 
@@ -255,8 +281,8 @@ __global__ void transform_from_rev_kernel_2_with_scalar(
     uint64_t sum = add_mod(u, v, modulus);
     uint64_t diff = sub_mod(u, v, modulus);
 
-    values[idx_x] = mul_root(guard(sum, modulus), scalar, modulus); // mul_scalar with scalar
-    values[idx_y] = mul_root(diff, scaled_r, modulus); // mul_root with scaled_r
+    values[idx_x] = mul_root(guard(sum, modulus), scalar, modulus);
+    values[idx_y] = mul_root(diff, scaled_r, modulus);
 }
 
 void transform_from_rev_cuda(
@@ -355,13 +381,6 @@ void transform_from_rev_cuda(
     }
 
     cudaMemcpy(values, d_values, n * sizeof(uint64_t), cudaMemcpyDeviceToHost);
-
-    std::cout << "GPU transform_from_rev" << std::endl;
-    for(size_t i = 0; i < n; i++) {
-        std::cout << values[i] << ", ";
-    }
-    std::cout << std::endl << "scalar: " << (scalar != nullptr ? "ok" : "null");
-    std::cout << std::endl << std::endl;
 
     cudaFree(d_values);
     cudaFree(d_roots);

@@ -304,6 +304,7 @@ namespace seal
                 {
                     r = *++roots;
                     RootType scaled_r = arithmetic_.mul_root_scalar(r, *scalar);
+
                     x = values;
                     y = x + gap;
                     if (gap < 4)
@@ -384,13 +385,6 @@ namespace seal
                         }
                     }
                 }
-
-                std::cout << "CPU transform_from_rev" << std::endl;
-                for(size_t i = 0; i < n; i++) {
-                    std::cout << values[i] << ", ";
-                }
-                std::cout << std::endl << "scalar: " << (scalar != nullptr ? "ok" : "null");
-                std::cout << std::endl << std::endl;
             }
 
         private:
