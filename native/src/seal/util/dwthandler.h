@@ -93,9 +93,9 @@ namespace seal
                 ValueType *values, int log_n, const RootType *roots, const ScalarType *scalar = nullptr) const
             {
                 if constexpr(std::is_same_v<ValueType, uint64_t>) {
-                    transform_to_rev_cuda(values, log_n, roots, arithmetic_.modulus());
+                    transform_to_rev_cuda(values, log_n, roots, arithmetic_.modulus(), scalar);
                 } else {
-                    transform_to_rev_old(values, log_n, roots, scalar); // Keeping the same call if it's not BFV
+                    transform_to_rev_old(values, log_n, roots, scalar); // Keeping the same call if it's not BFV or BGV
                 }
             }
 
@@ -216,7 +216,7 @@ namespace seal
                 if constexpr(std::is_same_v<ValueType, uint64_t>) {
                     transform_from_rev_cuda(values, log_n, roots, arithmetic_.modulus(), scalar);
                 } else {
-                    transform_from_rev_old(values, log_n, roots, scalar); // Keeping the same call if it's not BFV
+                    transform_from_rev_old(values, log_n, roots, scalar); // Keeping the same call if it's not BFV or BGV
                 }
             }
 

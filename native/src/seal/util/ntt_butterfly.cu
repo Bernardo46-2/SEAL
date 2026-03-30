@@ -21,6 +21,10 @@ __device__ __forceinline__ uint64_t mul_root(uint64_t x, Root64 y, uint64_t mod)
     return tmp2 >= mod_times_two ? tmp2 - mod_times_two : tmp2;
 }
 
+__device__ __forceinline__ uint64_t mul_scalar(uint64_t x, Root64 s, uint64_t mod) {
+    return mul_root(x, s, mod);
+}
+
 __device__ uint64_t compute_quotient(uint64_t operand, uint64_t modulus)
 {
     uint64_t hi = operand;
@@ -93,7 +97,7 @@ __global__ void transform_to_rev_kernel_1(
     values[idx_y] = sub_mod(u, v, modulus);
 }
 
-__global__ void transform_to_rev_kernel_2(
+__global__ void transform_to_rev_kernel_2_no_scalar(
     uint64_t* values,
     const Root64* roots,
     uint64_t modulus,
@@ -114,16 +118,51 @@ __global__ void transform_to_rev_kernel_2(
     values[idx_y] = sub_mod(u, v, modulus);
 }
 
+__global__ void transform_to_rev_kernel_2_with_scalar(
+    uint64_t* values,
+    const Root64* roots,
+    uint64_t modulus,
+    int m,
+    const Root64 scalar)
+{
+    size_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if(tid >= m) return;
+
+    int idx_x = 2 * tid;
+    int idx_y = idx_x + 1;
+
+    Root64 r = roots[tid];
+    Root64 scaled_r = mul_root_scalar(r, scalar, modulus);
+
+    uint64_t u = mul_scalar(guard(values[idx_x], modulus), scalar, modulus);
+    uint64_t v = mul_root(values[idx_y], scaled_r, modulus);
+    
+    values[idx_x] = add_mod(u, v, modulus);
+    values[idx_y] = sub_mod(u, v, modulus);
+}
+
 void transform_to_rev_cuda(
     uint64_t* values, 
     int log_n, 
     const seal::util::MultiplyUIntModOperand* roots, 
-    uint64_t modulus) 
+    uint64_t modulus,
+    const seal::util::MultiplyUIntModOperand* scalar) 
 {
     size_t n = size_t(1) << log_n;
     
-    uint64_t* d_values;
-    Root64* d_roots;
+    // uint64_t* d_values;
+    // Root64* d_roots;
+
+    static uint64_t* d_values = nullptr;
+    static Root64* d_roots = nullptr;
+    static size_t allocated_n_values = 0;
+    static size_t allocated_n_roots = 0;
+    
+    if (allocated_n_values < n) {
+        if (d_values) cudaFree(d_values);
+        cudaMalloc(&d_values, n * sizeof(uint64_t));
+        allocated_n_values = n;
+    }
 
     std::vector<Root64> stage_roots;
     const seal::util::MultiplyUIntModOperand* root_ptr = roots;
@@ -151,11 +190,17 @@ void transform_to_rev_cuda(
 
         stage_roots.push_back(r);
     }
+    
+    if (allocated_n_roots < stage_roots.size()) {
+        if (d_roots) cudaFree(d_roots);
+        cudaMalloc(&d_roots, stage_roots.size() * sizeof(Root64));
+        allocated_n_roots = stage_roots.size();
+    }
 
-    cudaMalloc(&d_values, n * sizeof(uint64_t));
+    // cudaMalloc(&d_values, n * sizeof(uint64_t));
     cudaMemcpy(d_values, values, n * sizeof(uint64_t), cudaMemcpyHostToDevice);
     
-    cudaMalloc(&d_roots, stage_roots.size() * sizeof(Root64));
+    // cudaMalloc(&d_roots, stage_roots.size() * sizeof(Root64));
     cudaMemcpy(d_roots, stage_roots.data(),
                stage_roots.size() * sizeof(Root64),
                cudaMemcpyHostToDevice);
@@ -184,18 +229,33 @@ void transform_to_rev_cuda(
         gap >>= 1;
     }
     
-    transform_to_rev_kernel_2<<<blocks, threads_per_block>>>(
-        d_values,
-        d_roots + root_offset,
-        modulus,
-        m
-    );
-    cudaDeviceSynchronize();
+    if(scalar != nullptr) {
+        Root64 s;
+        s.operand = scalar->operand;
+        s.quotient = scalar->quotient;
+        
+        transform_to_rev_kernel_2_with_scalar<<<blocks, threads_per_block>>>(
+            d_values,
+            d_roots + root_offset,
+            modulus,
+            m,
+            s
+        );
+        cudaDeviceSynchronize();
+    } else {
+        transform_to_rev_kernel_2_no_scalar<<<blocks, threads_per_block>>>(
+            d_values,
+            d_roots + root_offset,
+            modulus,
+            m
+        );
+        cudaDeviceSynchronize();
+    }
 
     cudaMemcpy(values, d_values, n * sizeof(uint64_t), cudaMemcpyDeviceToHost);
 
-    cudaFree(d_values);
-    cudaFree(d_roots);
+    // cudaFree(d_values);
+    // cudaFree(d_roots);
 }
 
 __global__ void transform_from_rev_kernel_1(
@@ -281,7 +341,7 @@ __global__ void transform_from_rev_kernel_2_with_scalar(
     uint64_t sum = add_mod(u, v, modulus);
     uint64_t diff = sub_mod(u, v, modulus);
 
-    values[idx_x] = mul_root(guard(sum, modulus), scalar, modulus);
+    values[idx_x] = mul_scalar(guard(sum, modulus), scalar, modulus);
     values[idx_y] = mul_root(diff, scaled_r, modulus);
 }
 
@@ -294,8 +354,19 @@ void transform_from_rev_cuda(
 {
     size_t n = size_t(1) << log_n;
     
-    uint64_t* d_values;
-    Root64* d_roots;
+    // uint64_t* d_values;
+    // Root64* d_roots;
+    
+    static uint64_t* d_values = nullptr;
+    static Root64* d_roots = nullptr;
+    static size_t allocated_n_values = 0;
+    static size_t allocated_n_roots = 0;
+    
+    if (allocated_n_values < n) {
+        if (d_values) cudaFree(d_values);
+        cudaMalloc(&d_values, n * sizeof(uint64_t));
+        allocated_n_values = n;
+    }
 
     std::vector<Root64> stage_roots;
     const seal::util::MultiplyUIntModOperand* root_ptr = roots;
@@ -322,10 +393,16 @@ void transform_from_rev_cuda(
 
     stage_roots.push_back(r);
     
-    cudaMalloc(&d_values, n * sizeof(uint64_t));
+    if (allocated_n_roots < stage_roots.size()) {
+        if (d_roots) cudaFree(d_roots);
+        cudaMalloc(&d_roots, stage_roots.size() * sizeof(Root64));
+        allocated_n_roots = stage_roots.size();
+    }
+    
+    // cudaMalloc(&d_values, n * sizeof(uint64_t));
     cudaMemcpy(d_values, values, n * sizeof(uint64_t), cudaMemcpyHostToDevice);
     
-    cudaMalloc(&d_roots, stage_roots.size() * sizeof(Root64));
+    // cudaMalloc(&d_roots, stage_roots.size() * sizeof(Root64));
     cudaMemcpy(d_roots, stage_roots.data(),
                stage_roots.size() * sizeof(Root64),
                cudaMemcpyHostToDevice);
@@ -382,6 +459,6 @@ void transform_from_rev_cuda(
 
     cudaMemcpy(values, d_values, n * sizeof(uint64_t), cudaMemcpyDeviceToHost);
 
-    cudaFree(d_values);
-    cudaFree(d_roots);
+    // cudaFree(d_values);
+    // cudaFree(d_roots);
 }
